@@ -35,7 +35,7 @@ pgvector = ["pgvector>=0.3"]
 voice = ["faster-whisper>=1.0"]
 otlp = ["opentelemetry-exporter-otlp-proto-http>=1.25"]
 langsmith = ["langsmith>=0.1"]
-dev = ["pytest>=8.2", "ruff>=0.6"]
+dev = ["pytest>=8.2", "ruff==0.17.3"]
 all = ["relay[openai,anthropic,opensearch,pgvector,otlp,langsmith]"]
 
 [tool.setuptools.packages.find]

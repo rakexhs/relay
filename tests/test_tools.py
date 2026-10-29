@@ -162,3 +162,42 @@ def test_to_opensearch_builds_bool_query():
     assert {"term": {"service.keyword": "api"}} in bool_query["must"]
     assert bool_query["must_not"] == [{"term": {"status_code": 200}}]
     assert body["size"] == 10
+
+
+def test_opensearch_backend_sends_dsl_and_maps_hits():
+    from datetime import timedelta
+
+    from relay.tools.backends import OpenSearchLogs
+
+    class FakeClient:
+        def __init__(self):
+            self.calls = []
+
+        def search(self, index, body):
+            self.calls.append((index, body))
+            source = {"@timestamp": "2026-03-02T11:00:00Z", "service": "api", "status_code": 500}
+            return {"hits": {"hits": [{"_source": source}]}}
+
+    client = FakeClient()
+    backend = OpenSearchLogs("http://unused", "app-logs", client=client)
+    hits = backend.search(parse_query("service:api"), timedelta(hours=6), 5, now=None)
+    index, body = client.calls[0]
+    assert index == "app-logs"
+    assert body["query"]["bool"]["must"][0] == {"range": {"@timestamp": {"gte": "now-360m"}}}
+    assert hits == [{"timestamp": "2026-03-02T11:00:00Z", "service": "api", "status_code": 500}]
+
+
+def test_opensearch_errors_become_retryable_tool_errors():
+    from datetime import timedelta
+
+    from relay.tools.backends import OpenSearchLogs
+
+    class DownClient:
+        def search(self, index, body):
+            raise ConnectionError("refused")
+
+    backend = OpenSearchLogs("http://unused", "app-logs", client=DownClient())
+    with pytest.raises(ToolError) as excinfo:
+        backend.search(parse_query("level:error"), timedelta(hours=1), 5, now=None)
+    assert excinfo.value.code == "backend_unavailable"
+    assert excinfo.value.retryable

@@ -1,0 +1,47 @@
+name: eval-gate
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      provider:
+        description: "Model provider for a manual run (stub, openai, anthropic)"
+        default: stub
+
+jobs:
+  eval:
+    runs-on: ubuntu-latest
+    env:
+      PROVIDER: ${{ github.event.inputs.provider || 'stub' }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev,openai,anthropic]"
+
+      - name: Run the trajectory eval
+        run: python -m evals.run --tasks evals/data/tasks.sample.jsonl --provider "$PROVIDER" --out reports
+
+      - name: Gate on thresholds and baseline
+        run: >-
+          python -m evals.gate
+          --report reports/latest.json
+          --baseline evals/baseline.json
+          --config evals/gate.yaml
+          --summary "$GITHUB_STEP_SUMMARY"
+
+      - name: Add the report to the job summary
+        if: always()
+        run: test -f reports/latest.md && cat reports/latest.md >> "$GITHUB_STEP_SUMMARY" || true
+
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: eval-report
+          path: reports/
