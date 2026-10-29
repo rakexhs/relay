@@ -120,10 +120,19 @@ async def build_services(
             embedder=embedder,
         )
         registry = ToolRegistry(context, approval_tools=settings.approval_tools)
-        tools = tool_client or LocalToolClient(registry)
+        if tool_client is not None:
+            tools = tool_client
+        elif settings.tool_transport == "mcp":
+            from relay.mcp_client import in_process_client
+
+            tools = await stack.enter_async_context(
+                in_process_client(registry, approvals, settings.approval_tools)
+            )
+        else:
+            tools = LocalToolClient(registry)
         checkpointer = await stack.enter_async_context(open_checkpointer(settings))
         memory_writer = MemoryWriter(provider, embedder, memory)
-        deps = AgentDeps(provider, tools, settings, approvals=approvals)
+        deps = AgentDeps(provider, tools, settings, approvals=approvals, escalations=escalations)
         runner = AgentRunner(
             deps,
             checkpointer=checkpointer,

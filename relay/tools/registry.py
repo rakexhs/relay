@@ -60,6 +60,7 @@ class CallMeta:
     run_id: str | None = None
     trajectory: list[dict[str, Any]] = field(default_factory=list)
     approved: bool = False
+    approval_id: str | None = None
 
 
 Handler = Callable[[Any, ToolContext, CallMeta], Any | Awaitable[Any]]

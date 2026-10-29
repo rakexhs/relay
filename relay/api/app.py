@@ -78,6 +78,7 @@ def create_app(
             "storage": svc.storage,
             "checkpointer": svc.settings.checkpointer,
             "approval_tools": svc.settings.approval_tools,
+            "tool_transport": svc.settings.tool_transport,
         }
 
     # Tickets ---------------------------------------------------------------------------

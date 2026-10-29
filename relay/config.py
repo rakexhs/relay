@@ -28,6 +28,8 @@ class Settings(BaseSettings):
     checkpointer: Literal["memory", "postgres"] = "memory"
     opensearch_url: str = ""
     log_index: str = "app-logs"
+    # How the agent reaches its tools: in-process, or through an in-process MCP session.
+    tool_transport: Literal["local", "mcp"] = "local"
 
     # Agent loop
     max_steps: int = Field(default=12, ge=1, le=100)

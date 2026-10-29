@@ -36,6 +36,7 @@ from relay.approvals import Approval, ApprovalStore, Decision, InMemoryApprovalS
 from relay.config import Settings
 from relay.domain import utcnow
 from relay.providers.base import Message, ModelProvider, ModelRequest, ModelResponse, ToolCall
+from relay.tools.backends import EscalationSink
 from relay.tools.errors import is_error
 from relay.tools.registry import CallMeta
 
@@ -50,6 +51,8 @@ class AgentDeps:
     settings: Settings
     clock: Callable[[], datetime] = utcnow
     approvals: ApprovalStore = field(default_factory=InMemoryApprovalStore)
+    # Where policy-driven hand-offs go; None means "through the escalate_to_human tool".
+    escalations: EscalationSink | None = None
 
 
 def derive_outcome(trajectory: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -112,12 +115,14 @@ class AgentNodes:
         *,
         actor: str,
         approved: bool = False,
+        approval_id: str | None = None,
         extra: dict[str, Any] | None = None,
     ) -> tuple[dict[str, Any], dict[str, Any]]:
         meta = CallMeta(
             run_id=state.get("run_id"),
             trajectory=list(state.get("trajectory", [])),
             approved=approved,
+            approval_id=approval_id,
         )
         started = time.perf_counter()
         result = await self.deps.tools.call(name, args, meta)
@@ -251,6 +256,7 @@ class AgentNodes:
         if decision.approved:
             pending["args"] = decision.edited_args or pending["args"]
             pending["approved"] = True
+            pending["approval_id"] = approval["approval_id"]
             return {"pending": pending, "approval": None, "trajectory": [record]}
         # A rejection is the tool's answer: the model sees it and has to choose another path.
         result = {"status": "rejected", "note": decision.note or "The reviewer rejected this."}
@@ -271,12 +277,14 @@ class AgentNodes:
     async def execute(self, state: AgentState) -> dict[str, Any]:
         pending = dict(state["pending"])
         approved = bool(pending.pop("approved", False))
+        approval_id = pending.pop("approval_id", None)
         call = ToolCall(**pending)
         result, step = await self._run_tool(
-            state, call.name, call.args, actor="agent", approved=approved
+            state, call.name, call.args, actor="agent", approved=approved, approval_id=approval_id
         )
         if approved:
             step["approved"] = True
+            step["approval_id"] = approval_id
         content, report = render_observation(
             call.name, result, quote=self.deps.settings.quote_retrieved
         )
@@ -310,6 +318,39 @@ class AgentNodes:
             return {"route": "replan"}
         return {"route": "act"}
 
+    async def _system_escalation(
+        self, state: AgentState, reason: str, summary: str
+    ) -> dict[str, Any]:
+        """Policy hand-offs (SLA breach, step limit) skip the model and the approval gate.
+
+        They go straight to the escalation service when one is wired in, because the tool
+        path may be a remote MCP server that rightly refuses unapproved writes.
+        """
+        args = {"ticket_id": state["ticket"]["ticket_id"], "reason": reason, "summary": summary}
+        if self.deps.escalations is None:
+            _, step = await self._run_tool(
+                state, "escalate_to_human", args, actor="system", approved=True
+            )
+            return step
+        record = self.deps.escalations.escalate(
+            args["ticket_id"], reason, summary, state.get("run_id"), list(state["trajectory"])
+        )
+        return {
+            "type": "tool_call",
+            "at": self._now(),
+            "actor": "system",
+            "tool": "escalate_to_human",
+            "args": args,
+            "result": {
+                "status": "escalated",
+                "escalation_id": record["escalation_id"],
+                "reason": reason,
+            },
+            "error": None,
+            "latency_ms": 0.0,
+            "via": "escalation_service",
+        }
+
     async def finish(self, state: AgentState) -> dict[str, Any]:
         trajectory = list(state.get("trajectory", []))
         outcome = derive_outcome(trajectory)
@@ -324,17 +365,7 @@ class AgentNodes:
                     f"Agent stopped after {state.get('tool_calls', 0)} tool calls without "
                     f"resolving the ticket. Last model note: {state.get('final_text') or 'none'}"
                 )
-            _, step = await self._run_tool(
-                state,
-                "escalate_to_human",
-                {
-                    "ticket_id": state["ticket"]["ticket_id"],
-                    "reason": reason,
-                    "summary": summary[:2000],
-                },
-                actor="system",
-                approved=True,
-            )
+            step = await self._system_escalation(state, reason, summary[:2000])
             trajectory.append(step)
             update["trajectory"] = [step]
             outcome = derive_outcome(trajectory) or {"status": "failed", "reason": reason}

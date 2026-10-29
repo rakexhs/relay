@@ -139,3 +139,13 @@ def test_queue_and_404s(client):
         ).status_code
         == 422
     )
+
+
+def test_api_can_reach_tools_over_mcp():
+    settings = Settings(_env_file=None, tool_transport="mcp")
+    with TestClient(create_app(settings)) as c:
+        assert c.get("/health").json()["tool_transport"] == "mcp"
+        ticket = _ticket(c)
+        run = c.post(f"/tickets/{ticket['ticket_id']}/run").json()
+        done = c.post(f"/approvals/{run['run']['pending_approval_id']}", json={"approved": True})
+        assert done.json()["outcome"]["status"] == "resolved"
