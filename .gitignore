@@ -1,0 +1,38 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Environments
+.venv/
+venv/
+.env
+.env.*
+!.env.example
+
+# Tooling caches
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Eval output
+reports/*
+!reports/.gitkeep
+
+# Local data
+*.sqlite
+*.db
+models/
+*.wav
+*.mp3
+*.m4a
+!tests/data/*.wav
+
+# Editors / OS
+.DS_Store
+.idea/
+.vscode/
