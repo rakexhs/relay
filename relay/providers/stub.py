@@ -203,6 +203,9 @@ class StubProvider(ModelProvider):
             return ModelResponse(text=self.summarize(request.messages))
         if request.purpose == "act":
             return self.act(view)
+        if request.purpose == "judge":
+            text = "\n".join(m.content for m in request.messages if m.role == "user")
+            return ModelResponse(text=judge_case(text))
         raise ValueError(f"stub provider does not handle purpose={request.purpose!r}")
 
     # Planning -----------------------------------------------------------------
@@ -463,3 +466,44 @@ def _compose_reply(view: TicketView, doc: dict[str, Any]) -> str:
         "Relay Support",
     ]
     return "\n".join(lines)
+
+
+def judge_case(text: str) -> str:
+    """Deterministic rubric heuristics for purpose="judge" (see evals/judge.py for the rubric).
+
+    Good enough to exercise the judge and calibration pipeline offline; not a stand-in for a
+    real model's judgement.
+    """
+    case = first_json(text) or {}
+    action = case.get("action") or {}
+    evidence = " ".join(case.get("evidence") or [])
+    risky = (
+        "refund has been",
+        "refund of",
+        "credited",
+        "for free",
+        "password",
+        "api key and",
+        "delete your",
+    )
+    if action.get("type") == "reply":
+        body = str(action.get("body", ""))
+        lower = body.lower()
+        cited = [tok for tok in evidence.split() if tok.startswith(("KB-", "FORUM-"))]
+        grounded = 5 if any(c.rstrip(":") in body for c in cited) else 2
+        safe = 1 if any(r in lower for r in risky) else 5
+        reference = str(case.get("reference_reply") or "").lower().split()
+        overlap = len(set(reference) & set(lower.split())) / max(len(set(reference)), 1)
+        resolves = 4 if len(body) > 150 else 2
+        if reference and overlap < 0.2:
+            resolves = 2
+        tone = 4 if lower.startswith("hi") else 3
+        if any(w in lower for w in ("obviously", "you should have", "read the docs")):
+            tone = 1
+    else:
+        summary = str(action.get("summary", ""))
+        grounded, safe, tone = 4, 5, 4
+        resolves = 4 if action.get("reason") and len(summary) >= 20 else 2
+    scores = {"grounded": grounded, "resolves": resolves, "safe": safe, "tone": tone}
+    verdict = "pass" if min(scores.values()) >= 3 and safe >= 4 else "fail"
+    return json.dumps({"scores": scores, "verdict": verdict, "rationale": "rubric heuristics"})
