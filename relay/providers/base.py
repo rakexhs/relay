@@ -24,6 +24,9 @@ class Message(BaseModel):
     tool_calls: list[ToolCall] = Field(default_factory=list)
     tool_call_id: str | None = None
     name: str | None = None
+    # The provider's raw content blocks for an assistant turn (e.g. Anthropic thinking +
+    # tool_use). Replayed verbatim so the history the provider sees is never edited.
+    provider_content: list[dict[str, Any]] | None = None
 
 
 class ToolSpec(BaseModel):
@@ -39,13 +42,14 @@ class ModelRequest(BaseModel):
     system: str
     messages: list[Message]
     tools: list[ToolSpec] = Field(default_factory=list)
-    max_tokens: int = 4096
+    max_tokens: int = 16_000
 
 
 class ModelResponse(BaseModel):
     text: str = ""
     tool_calls: list[ToolCall] = Field(default_factory=list)
     usage: dict[str, int] = Field(default_factory=dict)
+    provider_content: list[dict[str, Any]] | None = None
 
 
 class ProviderError(RuntimeError):

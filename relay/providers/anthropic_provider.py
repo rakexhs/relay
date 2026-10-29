@@ -25,6 +25,8 @@ def to_anthropic_messages(request: ModelRequest) -> list[dict[str, Any]]:
         if msg.role == "system":
             # Mid-run system notes are sent as user text; the real system prompt is top-level.
             out.append({"role": "user", "content": [{"type": "text", "text": msg.content}]})
+        elif msg.role == "assistant" and msg.provider_content:
+            out.append({"role": "assistant", "content": msg.provider_content})
         elif msg.role == "assistant":
             blocks: list[dict[str, Any]] = []
             if msg.content:
@@ -54,6 +56,17 @@ def to_anthropic_messages(request: ModelRequest) -> list[dict[str, Any]]:
     return out
 
 
+def _block_dict(block: Any) -> dict[str, Any]:
+    dump = getattr(block, "model_dump", None)
+    if callable(dump):
+        return dump(mode="json", exclude_none=True)
+    return {k: v for k, v in vars(block).items() if v is not None}
+
+
+# Thinking counts toward max_tokens on current models, so small budgets can starve the answer.
+MIN_MAX_TOKENS = 16_000
+
+
 class AnthropicProvider(ModelProvider):
     name = "anthropic"
 
@@ -70,7 +83,7 @@ class AnthropicProvider(ModelProvider):
     async def complete(self, request: ModelRequest) -> ModelResponse:
         kwargs: dict[str, Any] = {
             "model": self.model,
-            "max_tokens": request.max_tokens,
+            "max_tokens": max(request.max_tokens, MIN_MAX_TOKENS),
             "system": request.system,
             "messages": to_anthropic_messages(request),
         }
@@ -79,6 +92,8 @@ class AnthropicProvider(ModelProvider):
                 {"name": t.name, "description": t.description, "input_schema": t.parameters}
                 for t in request.tools
             ]
+            # The graph runs one tool call per step; ask for one at a time.
+            kwargs["tool_choice"] = {"type": "auto", "disable_parallel_tool_use": True}
         response = await self._client.messages.create(**kwargs)
         if response.stop_reason == "refusal":
             raise ProviderError("Anthropic declined the request (stop_reason=refusal)")
@@ -89,8 +104,15 @@ class AnthropicProvider(ModelProvider):
                 text_parts.append(block.text)
             elif block.type == "tool_use":
                 calls.append(ToolCall(id=block.id, name=block.name, args=dict(block.input or {})))
+        if response.stop_reason == "max_tokens" and not calls and not text_parts:
+            raise ProviderError("Anthropic hit max_tokens before producing an answer")
         usage = {
             "input_tokens": response.usage.input_tokens,
             "output_tokens": response.usage.output_tokens,
         }
-        return ModelResponse(text="\n".join(text_parts), tool_calls=calls, usage=usage)
+        return ModelResponse(
+            text="\n".join(text_parts),
+            tool_calls=calls,
+            usage=usage,
+            provider_content=[_block_dict(block) for block in response.content],
+        )

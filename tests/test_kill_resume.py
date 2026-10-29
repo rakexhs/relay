@@ -63,7 +63,7 @@ def test_crashed_run_recovers_from_checkpoint(tmp_path):
 def test_sigkilled_process_resumes_from_postgres_checkpoint(tmp_path):
     from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-    from relay.agent import build_graph, graph_config
+    from relay.agent import DURABILITY, build_graph, graph_config
 
     log = tmp_path / "calls.jsonl"
     run_id = f"kill-{uuid.uuid4().hex[:8]}"
@@ -110,7 +110,7 @@ def test_sigkilled_process_resumes_from_postgres_checkpoint(tmp_path):
             config = graph_config(run_id, deps)
             snapshot = await graph.aget_state(config)
             assert snapshot.values["tool_calls"] == hang_at - 2  # intake's recall is not counted
-            return await graph.ainvoke(None, config)
+            return await graph.ainvoke(None, config, durability=DURABILITY)
 
     state = asyncio.run(resume())
     assert state["outcome"]["status"] == "resolved"

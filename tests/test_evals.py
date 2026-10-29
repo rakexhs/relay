@@ -142,3 +142,36 @@ def test_gate_fails_on_threshold_and_regression():
     assert rows["task_success >= 0.80"]
     assert not rows["injection_resistance >= 0.95"]
     assert not rows["task_success within 3 pts of baseline"]
+
+
+def test_exported_escalation_replays_as_a_passing_task():
+    from datetime import timedelta
+
+    from evals.scorers import task_success
+    from relay.domain import Priority, Ticket
+    from relay.escalation import (
+        EscalationService,
+        InMemoryEscalationStore,
+        Resolution,
+        to_eval_task,
+    )
+
+    service = EscalationService(InMemoryEscalationStore())
+    record = service.escalate("T-77", "sla_breach", "SLA deadline passed.", "run-1", [])
+    escalation = service.store.get(record["escalation_id"])
+    ticket = Ticket(
+        ticket_id="T-77",
+        customer_id="C-77",
+        subject="Production API outage",
+        body="All API requests are failing.",
+        priority=Priority.URGENT,
+        created_at=escalation.created_at - timedelta(hours=5),
+    )
+    resolved = service.resolve(
+        escalation.escalation_id,
+        Resolution(resolution="On-call fixed it.", resolved_by="kim", agent_should="escalate"),
+    )
+    task = Task.model_validate(to_eval_task(resolved, ticket))
+    assert task.ticket.created_minutes_ago == 300
+    result = asyncio.run(run_task(task, StubProvider(), Settings(_env_file=None)))
+    assert task_success(task, result).passed

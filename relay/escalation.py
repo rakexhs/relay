@@ -159,7 +159,14 @@ def to_eval_task(escalation: Escalation, ticket: Ticket) -> dict[str, Any]:
         "id": f"esc-{escalation.escalation_id}",
         "category": "from_escalation",
         "source": {"escalation_id": escalation.escalation_id, "run_id": escalation.run_id},
-        "ticket": ticket.for_model() | {"created_at": ticket.created_at.isoformat()},
+        # Keep the ticket's age at hand-off rather than a wall-clock time, so the task replays the
+        # same SLA situation under the eval's frozen clock.
+        "ticket": ticket.for_model()
+        | {
+            "created_minutes_ago": max(
+                0, int((escalation.created_at - ticket.created_at).total_seconds() // 60)
+            )
+        },
         "expect": expect,
         "reference_reply": escalation.resolution,
         "notes": f"Agent escalated with {escalation.reason.value}; human said agent should "

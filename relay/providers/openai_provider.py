@@ -70,6 +70,7 @@ class OpenAIProvider(ModelProvider):
                 }
                 for tool in request.tools
             ]
+            kwargs["parallel_tool_calls"] = False  # the graph runs one tool call per step
         response = await self._client.chat.completions.create(**kwargs)
         if not response.choices:
             raise ProviderError("OpenAI returned no choices")

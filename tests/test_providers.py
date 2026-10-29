@@ -185,3 +185,71 @@ def test_missing_sdk_gives_install_hint(monkeypatch):
     monkeypatch.setitem(sys.modules, "anthropic", None)
     with pytest.raises(MissingDependencyError, match=r"relay\[anthropic\]"):
         AnthropicProvider("claude-opus-5-5")
+
+
+def test_anthropic_thinking_blocks_are_replayed_unchanged():
+    """The assistant turn sent back on the next request is exactly what the API returned."""
+    from relay.agent.nodes import AgentDeps, AgentNodes
+
+    thinking = SimpleNamespace(type="thinking", thinking="", signature="sig-abc")
+    tool_use = SimpleNamespace(
+        type="tool_use", id="tu_1", name="lookup_ticket", input={"ticket_id": "T-1"}
+    )
+    first = SimpleNamespace(
+        content=[thinking, tool_use],
+        stop_reason="tool_use",
+        usage=SimpleNamespace(input_tokens=10, output_tokens=5),
+    )
+    second = SimpleNamespace(
+        content=[SimpleNamespace(type="text", text="Done.")],
+        stop_reason="end_turn",
+        usage=SimpleNamespace(input_tokens=20, output_tokens=2),
+    )
+    sent = []
+
+    class FakeMessages:
+        def __init__(self):
+            self.responses = [first, second]
+
+        async def create(self, **kwargs):
+            sent.append(kwargs)
+            return self.responses.pop(0)
+
+    provider = AnthropicProvider("claude-opus-5-5", client=SimpleNamespace(messages=FakeMessages()))
+
+    class OneTool:
+        async def list_tools(self):
+            return [ToolSpec(name="lookup_ticket", description="d", parameters={"type": "object"})]
+
+    nodes = AgentNodes(AgentDeps(provider, OneTool(), Settings(_env_file=None)))
+    state = {"messages": [Message(role="user", content="ticket").model_dump()], "plan": []}
+    update = asyncio.run(nodes.act(state))
+    tool_result = Message(role="tool", tool_call_id="tu_1", content='{"ok": true}').model_dump()
+    state["messages"] += [*update["messages"], tool_result]
+    asyncio.run(nodes.act(state))
+
+    replayed = sent[1]["messages"][1]
+    assert replayed["role"] == "assistant"
+    assert replayed["content"][0] == {"type": "thinking", "thinking": "", "signature": "sig-abc"}
+    assert replayed["content"][1]["type"] == "tool_use"
+    assert sent[0]["system"] == sent[1]["system"]  # the system prompt never changes mid-run
+    assert sent[0]["tool_choice"] == {"type": "auto", "disable_parallel_tool_use": True}
+
+
+def test_anthropic_max_tokens_without_output_is_an_error():
+    response = SimpleNamespace(
+        content=[SimpleNamespace(type="thinking", thinking="", signature="s")],
+        stop_reason="max_tokens",
+        usage=SimpleNamespace(input_tokens=1, output_tokens=1),
+    )
+
+    class FakeMessages:
+        async def create(self, **kwargs):
+            assert kwargs["max_tokens"] >= 16_000
+            return response
+
+    provider = AnthropicProvider("claude-opus-5-5", client=SimpleNamespace(messages=FakeMessages()))
+    from relay.providers import ProviderError
+
+    with pytest.raises(ProviderError, match="max_tokens"):
+        asyncio.run(provider.complete(_request()))

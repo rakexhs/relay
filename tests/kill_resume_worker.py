@@ -10,7 +10,14 @@ import sys
 
 from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
 
-from relay.agent import AgentDeps, LocalToolClient, build_graph, graph_config, initial_state
+from relay.agent import (
+    DURABILITY,
+    AgentDeps,
+    LocalToolClient,
+    build_graph,
+    graph_config,
+    initial_state,
+)
 from relay.config import Settings
 from relay.providers import StubProvider
 from relay.tools import ToolRegistry
@@ -32,7 +39,9 @@ async def main(database_url: str, run_id: str, log_path: str, hang_at: int) -> N
         await saver.setup()
         world, deps, graph = build(saver, log_path, hang_at)
         ticket = world.tickets.get_ticket("T-100").for_model()
-        await graph.ainvoke(initial_state(run_id, ticket), graph_config(run_id, deps))
+        await graph.ainvoke(
+            initial_state(run_id, ticket), graph_config(run_id, deps), durability=DURABILITY
+        )
 
 
 if __name__ == "__main__":

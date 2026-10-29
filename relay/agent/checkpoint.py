@@ -1,9 +1,10 @@
 """Checkpointer selection: Postgres in production, in-memory for tests and local runs.
 
-With the Postgres saver every super-step is written before the next one starts. Because the
-`execute` node runs exactly one tool call, a process killed mid-run resumes from the last
-completed tool call: `AgentRunner.recover(run_id)` (or `graph.ainvoke(None, config)`) picks up
-from that checkpoint, and only a call that was in flight when the process died runs again.
+With the Postgres saver and durability="sync" (see graph.DURABILITY), every super-step is
+committed before the next one starts. Because the `execute` node runs exactly one tool call, a
+process killed mid-run resumes from the last completed tool call: `AgentRunner.recover(run_id)`
+picks up from that checkpoint, and only a call that was in flight when the process died runs
+again.
 """
 
 from __future__ import annotations

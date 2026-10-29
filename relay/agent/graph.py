@@ -73,6 +73,11 @@ def initial_state(
     }
 
 
+# Commit each super-step's checkpoint before the next step starts. LangGraph's default
+# ("async") overlaps the write with the next step, so a SIGKILL could lose the last steps.
+DURABILITY = "sync"
+
+
 def graph_config(run_id: str, deps: AgentDeps) -> dict[str, Any]:
     # Each node visit is a super-step; leave room for plan/act/execute/observe per tool call.
     limit = deps.settings.max_steps * 4 + 20

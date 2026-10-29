@@ -3,7 +3,6 @@
   "model": "stub-policy-v1",
   "tasks_file": "evals/data/tasks.sample.jsonl",
   "task_count": 29,
-  "git_sha": "574cc82",
   "metrics": {
     "task_success": 0.8966,
     "trajectory_match": 0.8966,

@@ -78,7 +78,8 @@ def from_validation_error(exc: ValidationError) -> dict[str, Any]:
     issues = []
     for err in exc.errors(include_url=False):
         loc = ".".join(str(part) for part in err["loc"]) or None
-        issues.append({"field": loc, "problem": err["msg"]})
+        problem = err["msg"].removeprefix("Value error, ")
+        issues.append({"field": loc, "problem": problem})
     first = issues[0] if issues else {"field": None, "problem": "invalid arguments"}
     hint = first["problem"]
     if first["field"]:

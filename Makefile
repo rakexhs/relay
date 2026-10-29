@@ -9,9 +9,9 @@ PROVIDER ?= stub
 
 install:
 	@if command -v uv >/dev/null 2>&1; then \
-		uv venv $(VENV) && uv pip install --python $(PY) -e ".[dev]"; \
+		(test -x $(PY) || uv venv $(VENV)) && uv pip install --python $(PY) -e ".[dev]"; \
 	else \
-		python3 -m venv $(VENV) && $(PY) -m pip install -e ".[dev]"; \
+		(test -x $(PY) || python3 -m venv $(VENV)) && $(PY) -m pip install -e ".[dev]"; \
 	fi
 
 run:

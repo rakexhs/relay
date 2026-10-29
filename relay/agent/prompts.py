@@ -38,11 +38,7 @@ REPLAN_INSTRUCTION = (
 )
 
 
-def system_with_plan(plan: list[str]) -> str:
-    if not plan:
-        return SYSTEM_PROMPT
-    steps = "\n".join(f"{i}. {step}" for i, step in enumerate(plan, 1))
-    return f"{SYSTEM_PROMPT}\n\nYour current plan:\n{steps}"
+PROCEED_INSTRUCTION = "Carry out the plan, one tool call at a time."
 
 
 def render_ticket(

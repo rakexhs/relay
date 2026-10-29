@@ -25,11 +25,12 @@ from relay import tracing
 from relay.agent.client import ToolClient
 from relay.agent.prompts import (
     PLAN_INSTRUCTION,
+    PROCEED_INSTRUCTION,
     REPLAN_INSTRUCTION,
+    SYSTEM_PROMPT,
     parse_plan,
     render_observation,
     render_ticket,
-    system_with_plan,
 )
 from relay.agent.state import AgentState
 from relay.approvals import Approval, ApprovalStore, Decision, InMemoryApprovalStore
@@ -152,7 +153,11 @@ class AgentNodes:
         result, step = await self._run_tool(
             state,
             "recall_customer_history",
-            {"customer_id": ticket["customer_id"], "query": ticket["subject"], "top_k": 3},
+            {
+                "customer_id": ticket["customer_id"],
+                "query": ticket["subject"],
+                "top_k": self.deps.settings.memory_top_k,
+            },
             actor="system",
         )
         memories = [] if is_error(result) else result.get("memories", [])
@@ -168,16 +173,30 @@ class AgentNodes:
         return update
 
     async def plan(self, state: AgentState) -> dict[str, Any]:
+        """Ask for a plan and keep the exchange in the transcript.
+
+        The history only ever grows: the system prompt never changes and the plan is a normal
+        assistant turn, followed by a user turn telling the model to proceed. Providers that
+        cache prompts or bind reasoning to the exact history keep working across replans.
+        """
         replanning = state.get("route") == "replan"
-        instruction = REPLAN_INSTRUCTION if replanning else PLAN_INSTRUCTION
-        messages = [Message(**m) for m in state["messages"]]
-        messages.append(Message(role="user", content=instruction))
+        ask = Message(role="user", content=REPLAN_INSTRUCTION if replanning else PLAN_INSTRUCTION)
+        messages = [Message(**m) for m in state["messages"]] + [ask]
         response = await self._complete(
-            ModelRequest(purpose="plan", system=system_with_plan([]), messages=messages)
+            ModelRequest(purpose="plan", system=SYSTEM_PROMPT, messages=messages)
         )
         steps = parse_plan(response.text)
+        answer = Message(
+            role="assistant", content=response.text, provider_content=response.provider_content
+        )
+        proceed = Message(role="user", content=PROCEED_INSTRUCTION)
         record = {"type": "replan" if replanning else "plan", "at": self._now(), "steps": steps}
-        update: dict[str, Any] = {"plan": steps, "trajectory": [record], "route": "act"}
+        update: dict[str, Any] = {
+            "plan": steps,
+            "trajectory": [record],
+            "route": "act",
+            "messages": [ask.model_dump(), answer.model_dump(), proceed.model_dump()],
+        }
         if replanning:
             update["replans"] = state.get("replans", 0) + 1
         return update
@@ -187,7 +206,7 @@ class AgentNodes:
         response = await self._complete(
             ModelRequest(
                 purpose="act",
-                system=system_with_plan(state.get("plan", [])),
+                system=SYSTEM_PROMPT,
                 messages=[Message(**m) for m in state["messages"]],
                 tools=await self._tool_specs(),
             )
@@ -195,7 +214,11 @@ class AgentNodes:
         if not response.tool_calls:
             return {"pending": None, "final_text": response.text}
         call: ToolCall = response.tool_calls[0]
-        assistant = Message(role="assistant", content=response.text, tool_calls=[call])
+        # Replaying raw provider content is only safe when it holds exactly the call we run.
+        raw = response.provider_content if len(response.tool_calls) == 1 else None
+        assistant = Message(
+            role="assistant", content=response.text, tool_calls=[call], provider_content=raw
+        )
         update: dict[str, Any] = {
             "pending": call.model_dump(),
             "messages": [assistant.model_dump()],

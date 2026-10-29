@@ -17,7 +17,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, Field
 
 from relay import sla
-from relay.agent.graph import build_graph, graph_config, initial_state
+from relay.agent.graph import DURABILITY, build_graph, graph_config, initial_state
 from relay.agent.nodes import AgentDeps
 from relay.approvals import ApprovalError, ApprovalStatus, Decision
 from relay.domain import Ticket, TicketStatus, utcnow
@@ -143,7 +143,7 @@ class AgentRunner:
     async def _drive(self, record: RunRecord, payload: Any) -> RunRecord:
         config = self._config(record.run_id)
         try:
-            await self.graph.ainvoke(payload, config)
+            await self.graph.ainvoke(payload, config, durability=DURABILITY)
         except Exception as exc:
             failed = record.model_copy(
                 update={

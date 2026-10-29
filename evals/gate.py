@@ -62,7 +62,6 @@ def write_baseline(report: dict[str, Any], path: str | Path) -> None:
         "model": report["run"]["model"],
         "tasks_file": report["run"]["tasks_file"],
         "task_count": report["run"]["task_count"],
-        "git_sha": report["run"].get("git_sha"),
         "metrics": rates(report),
     }
     Path(path).write_text(json.dumps(baseline, indent=2) + "\n", encoding="utf-8")
