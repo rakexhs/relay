@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Protocol
 
-from relay.domain import Customer, Ticket, utcnow
+from relay.domain import Customer, Ticket, TicketStatus, utcnow
 from relay.tools.errors import ToolError, ToolErrorCode
 from relay.tools.logquery import LogQuery, to_opensearch
 
@@ -104,6 +104,14 @@ class InMemoryTickets:
 
     def put_customer(self, customer: Customer) -> None:
         self.customers[customer.customer_id] = customer
+
+    def set_status(self, ticket_id: str, status: TicketStatus) -> None:
+        ticket = self.tickets.get(ticket_id)
+        if ticket is not None:
+            self.tickets[ticket_id] = ticket.model_copy(update={"status": status})
+
+    def list_tickets(self) -> list[Ticket]:
+        return list(self.tickets.values())
 
 
 # Logs --------------------------------------------------------------------------------------

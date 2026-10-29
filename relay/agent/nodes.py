@@ -1,16 +1,25 @@
-"""Graph nodes: intake -> plan -> act -> execute -> observe -> (act | replan | finish).
+"""Graph nodes.
+
+    intake -> plan -> act -> [request_approval -> await_approval] -> execute -> observe
+    observe -> act | plan (replan) | finish
 
 Each node does one thing and returns a partial state update. `execute` runs exactly one tool
 call, so every completed tool call ends a LangGraph super-step and gets its own checkpoint.
+Write tools pass through two nodes first: `request_approval` stores the pending approval (its
+key makes it idempotent), and `await_approval` does nothing but interrupt. On resume LangGraph
+re-runs only the interrupted node, so nothing is written twice.
 """
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Any
+
+from langgraph.types import interrupt
 
 from relay.agent.client import ToolClient
 from relay.agent.prompts import (
@@ -22,6 +31,7 @@ from relay.agent.prompts import (
     system_with_plan,
 )
 from relay.agent.state import AgentState
+from relay.approvals import Approval, ApprovalStore, Decision, InMemoryApprovalStore
 from relay.config import Settings
 from relay.domain import utcnow
 from relay.providers.base import Message, ModelProvider, ModelRequest, ToolCall
@@ -38,6 +48,7 @@ class AgentDeps:
     tools: ToolClient
     settings: Settings
     clock: Callable[[], datetime] = utcnow
+    approvals: ApprovalStore = field(default_factory=InMemoryApprovalStore)
 
 
 def derive_outcome(trajectory: list[dict[str, Any]]) -> dict[str, Any] | None:
@@ -113,6 +124,10 @@ class AgentNodes:
 
     # nodes -------------------------------------------------------------------------------
 
+    def _sla_breached(self, state: AgentState) -> bool:
+        deadline = state.get("sla_deadline")
+        return bool(deadline) and self.deps.clock() >= datetime.fromisoformat(deadline)
+
     async def intake(self, state: AgentState) -> dict[str, Any]:
         """Recall the customer's history and open the conversation with the ticket."""
         ticket = state["ticket"]
@@ -128,7 +143,11 @@ class AgentNodes:
         if flagged:
             step["safety"] = flagged[0]
         first = Message(role="user", content=content)
-        return {"messages": [first.model_dump()], "trajectory": [step]}
+        update: dict[str, Any] = {"messages": [first.model_dump()], "trajectory": [step]}
+        if self._sla_breached(state):
+            update["route"] = "finish"
+            update["stop_reason"] = "sla_breach"
+        return update
 
     async def plan(self, state: AgentState) -> dict[str, Any]:
         replanning = state.get("route") == "replan"
@@ -170,9 +189,81 @@ class AgentNodes:
             ]
         return update
 
+    def needs_approval(self, state: AgentState) -> bool:
+        pending = state.get("pending")
+        if not pending or pending.get("approved"):
+            return False
+        return self.deps.tools.requires_approval(pending["name"], pending["args"])
+
+    async def request_approval(self, state: AgentState) -> dict[str, Any]:
+        call = state["pending"]
+        approval = self.deps.approvals.create(
+            Approval(
+                key=f"{state['run_id']}:{call['id']}",
+                run_id=state["run_id"],
+                ticket_id=state["ticket"]["ticket_id"],
+                tool=call["name"],
+                args=call["args"],
+            )
+        )
+        record = {
+            "type": "approval_requested",
+            "at": self._now(),
+            "approval_id": approval.approval_id,
+            "tool": call["name"],
+            "args": call["args"],
+        }
+        return {"approval": approval.model_dump(mode="json"), "trajectory": [record]}
+
+    async def await_approval(self, state: AgentState) -> dict[str, Any]:
+        approval = state["approval"]
+        raw = interrupt(
+            {
+                "approval_id": approval["approval_id"],
+                "tool": approval["tool"],
+                "args": approval["args"],
+            }
+        )
+        decision = Decision.model_validate(raw)
+        record = {
+            "type": "approval_decision",
+            "at": self._now(),
+            "approval_id": approval["approval_id"],
+            "approved": decision.approved,
+            "reviewer": decision.reviewer,
+            "note": decision.note,
+            "edited": decision.edited_args is not None,
+        }
+        pending = dict(state["pending"])
+        if decision.approved:
+            pending["args"] = decision.edited_args or pending["args"]
+            pending["approved"] = True
+            return {"pending": pending, "approval": None, "trajectory": [record]}
+        # A rejection is the tool's answer: the model sees it and has to choose another path.
+        result = {"status": "rejected", "note": decision.note or "The reviewer rejected this."}
+        observation = Message(
+            role="tool",
+            tool_call_id=pending["id"],
+            name=pending["name"],
+            content=f"Result of {pending['name']}:\n{json.dumps(result)}",
+        )
+        return {
+            "pending": None,
+            "approval": None,
+            "messages": [observation.model_dump()],
+            "trajectory": [record],
+            "tool_calls": state.get("tool_calls", 0) + 1,
+        }
+
     async def execute(self, state: AgentState) -> dict[str, Any]:
-        call = ToolCall(**state["pending"])
-        result, step = await self._run_tool(state, call.name, call.args, actor="agent")
+        pending = dict(state["pending"])
+        approved = bool(pending.pop("approved", False))
+        call = ToolCall(**pending)
+        result, step = await self._run_tool(
+            state, call.name, call.args, actor="agent", approved=approved
+        )
+        if approved:
+            step["approved"] = True
         content, report = render_observation(
             call.name, result, quote=self.deps.settings.quote_retrieved
         )
@@ -192,6 +283,9 @@ class AgentNodes:
         settings = self.deps.settings
         if derive_outcome(state.get("trajectory", [])) is not None:
             return {"route": "finish"}
+        if self._sla_breached(state):
+            note = {"type": "note", "at": self._now(), "note": "SLA deadline passed"}
+            return {"route": "finish", "stop_reason": "sla_breach", "trajectory": [note]}
         if state.get("tool_calls", 0) >= settings.max_steps:
             note = {"type": "note", "at": self._now(), "note": "step limit reached"}
             return {"route": "finish", "trajectory": [note]}
@@ -209,16 +303,20 @@ class AgentNodes:
         update: dict[str, Any] = {}
         if outcome is None:
             # Nothing resolved the ticket: hand it off so it never silently stalls.
-            summary = (
-                f"Agent stopped after {state.get('tool_calls', 0)} tool calls without resolving "
-                f"the ticket. Last model note: {state.get('final_text') or 'none'}"
-            )
+            reason = state.get("stop_reason") or "gave_up"
+            if reason == "sla_breach":
+                summary = "SLA resolution deadline passed before the ticket was resolved."
+            else:
+                summary = (
+                    f"Agent stopped after {state.get('tool_calls', 0)} tool calls without "
+                    f"resolving the ticket. Last model note: {state.get('final_text') or 'none'}"
+                )
             _, step = await self._run_tool(
                 state,
                 "escalate_to_human",
                 {
                     "ticket_id": state["ticket"]["ticket_id"],
-                    "reason": "gave_up",
+                    "reason": reason,
                     "summary": summary[:2000],
                 },
                 actor="system",
@@ -226,7 +324,7 @@ class AgentNodes:
             )
             trajectory.append(step)
             update["trajectory"] = [step]
-            outcome = derive_outcome(trajectory) or {"status": "failed", "reason": "gave_up"}
+            outcome = derive_outcome(trajectory) or {"status": "failed", "reason": reason}
         outcome = {**outcome, "tool_calls": state.get("tool_calls", 0)}
         record = {"type": "finish", "at": self._now(), "outcome": outcome}
         update["trajectory"] = [*update.get("trajectory", []), record]

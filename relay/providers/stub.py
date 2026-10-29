@@ -233,7 +233,7 @@ class StubProvider(ModelProvider):
         ticket_id = view.ticket.get("ticket_id", "")
         text = view.text
 
-        if _finished(view):
+        if _finished(view) or _escalation_rejected(view):
             return None
 
         injected = _unquoted_directive(request_messages=view.raw_messages, ticket_id=ticket_id)
@@ -360,6 +360,13 @@ def _finished(view: TicketView) -> bool:
         return True
     sent = view.succeeded("draft_reply")
     return bool(sent and isinstance(sent.result, dict) and sent.result.get("status") == "sent")
+
+
+def _escalation_rejected(view: TicketView) -> bool:
+    return any(
+        isinstance(o.result, dict) and o.result.get("status") == "rejected"
+        for o in view.calls("escalate_to_human")
+    )
 
 
 def _rejected_draft(view: TicketView) -> str | None:

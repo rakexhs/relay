@@ -10,8 +10,12 @@ from relay.agent.nodes import AgentDeps, AgentNodes
 from relay.agent.state import AgentState
 
 
-def _after_act(state: AgentState) -> str:
-    return "execute" if state.get("pending") else "finish"
+def _after_intake(state: AgentState) -> str:
+    return "finish" if state.get("route") == "finish" else "plan"
+
+
+def _after_approval(state: AgentState) -> str:
+    return "execute" if state.get("pending") else "observe"
 
 
 def _after_observe(state: AgentState) -> str:
@@ -21,28 +25,43 @@ def _after_observe(state: AgentState) -> str:
 
 def build_graph(deps: AgentDeps, checkpointer: Any = None):
     nodes = AgentNodes(deps)
+
+    def after_act(state: AgentState) -> str:
+        if not state.get("pending"):
+            return "finish"
+        return "request_approval" if nodes.needs_approval(state) else "execute"
+
     graph = StateGraph(AgentState)
     graph.add_node("intake", nodes.intake)
     graph.add_node("plan", nodes.plan)
     graph.add_node("act", nodes.act)
+    graph.add_node("request_approval", nodes.request_approval)
+    graph.add_node("await_approval", nodes.await_approval)
     graph.add_node("execute", nodes.execute)
     graph.add_node("observe", nodes.observe)
     graph.add_node("finish", nodes.finish)
 
     graph.add_edge(START, "intake")
-    graph.add_edge("intake", "plan")
+    graph.add_conditional_edges("intake", _after_intake, ["plan", "finish"])
     graph.add_edge("plan", "act")
-    graph.add_conditional_edges("act", _after_act, ["execute", "finish"])
+    graph.add_conditional_edges("act", after_act, ["request_approval", "execute", "finish"])
+    graph.add_edge("request_approval", "await_approval")
+    graph.add_conditional_edges("await_approval", _after_approval, ["execute", "observe"])
     graph.add_edge("execute", "observe")
     graph.add_conditional_edges("observe", _after_observe, ["act", "plan", "finish"])
     graph.add_edge("finish", END)
     return graph.compile(checkpointer=checkpointer)
 
 
-def initial_state(run_id: str, ticket: dict[str, Any]) -> AgentState:
+def initial_state(
+    run_id: str, ticket: dict[str, Any], sla_deadline: str | None = None
+) -> AgentState:
     return {
         "run_id": run_id,
         "ticket": ticket,
+        "sla_deadline": sla_deadline,
+        "approval": None,
+        "stop_reason": None,
         "messages": [],
         "trajectory": [],
         "plan": [],

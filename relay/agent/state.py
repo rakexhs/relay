@@ -22,5 +22,10 @@ class AgentState(TypedDict, total=False):
     tool_calls: int
     consecutive_errors: int
     route: Route
+    # Set when a write tool is waiting on a reviewer.
+    approval: dict[str, Any] | None
+    # ISO timestamp of the SLA resolution deadline; past it the run escalates with sla_breach.
+    sla_deadline: str | None
+    stop_reason: str | None
     final_text: str
     outcome: dict[str, Any] | None
