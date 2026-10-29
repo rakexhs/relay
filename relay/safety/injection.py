@@ -61,7 +61,7 @@ RULES: tuple[tuple[str, float, re.Pattern[str]], ...] = (
     ),
     (
         "exfiltration",
-        0.8,
+        1.0,
         re.compile(
             r"\b(send|reveal|include|paste|share)\b[^.\n]{0,40}\b(api[ _-]?keys?|passwords?|secrets?|tokens?|credentials)\b",
             re.I,

@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from relay.providers.base import Message, ModelProvider, ModelRequest, ModelResponse, ToolCall
+from relay.safety.injection import scan
 from relay.safety.quoting import strip_untrusted
 
 STOPWORDS = frozenset(
@@ -78,7 +79,7 @@ REASONS = (
     "gave_up",
 )
 
-CONFIDENCE_THRESHOLD = 0.3
+CONFIDENCE_THRESHOLD = 0.2
 MAX_FAILURES_PER_TOOL = 3
 
 
@@ -106,7 +107,8 @@ def first_json(text: str) -> Any:
 def keywords(text: str, limit: int = 8) -> list[str]:
     seen: list[str] = []
     for token in re.findall(r"[a-z0-9][a-z0-9_\-]+", text.lower()):
-        if token in STOPWORDS or token.isdigit() or token in seen:
+        # Keep HTTP status codes (429, 502); other bare numbers are noise.
+        if token in STOPWORDS or token in seen or (token.isdigit() and len(token) != 3):
             continue
         seen.append(token)
     return seen[:limit]
@@ -279,7 +281,9 @@ class StubProvider(ModelProvider):
             )
 
         docs = (view.succeeded("search_docs").result or {}).get("results", [])
-        top = docs[0] if docs else None
+        # Never build a customer reply out of text that reads like instructions.
+        usable = [d for d in docs if not scan(d.get("snippet", "")).flagged]
+        top = usable[0] if usable else None
         if top is None or float(top.get("score", 0)) < CONFIDENCE_THRESHOLD:
             return _escalate(
                 ticket_id, "low_confidence", "No documentation matched this ticket closely enough."
@@ -439,6 +443,7 @@ def _compose_reply(view: TicketView, doc: dict[str, Any]) -> str:
     lines += ["", doc.get("snippet", "").strip()]
     logs = view.succeeded("query_logs")
     hits = (logs.result or {}).get("hits", []) if logs else []
+    hits = [h for h in hits if not scan(h.get("message", "")).flagged]
     if hits:
         latest = hits[0]
         lines += [
@@ -446,8 +451,9 @@ def _compose_reply(view: TicketView, doc: dict[str, Any]) -> str:
             f"I checked our logs: {len(hits)} matching event(s) from {latest.get('service')}, "
             f'most recently "{latest.get("message")}" (request {latest.get("request_id")}).',
         ]
-    if view.memory:
-        lines += ["", f"This looks related to an earlier ticket: {view.memory[0].get('summary')}"]
+    memories = [m for m in view.memory if not scan(m.get("summary", "")).flagged]
+    if memories:
+        lines += ["", f"This looks related to an earlier ticket: {memories[0].get('summary')}"]
     lines += [
         "",
         f"More detail: {doc.get('title')} ({doc.get('doc_id')}).",
