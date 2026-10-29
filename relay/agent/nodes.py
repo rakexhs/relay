@@ -21,6 +21,7 @@ from typing import Any
 
 from langgraph.types import interrupt
 
+from relay import tracing
 from relay.agent.client import ToolClient
 from relay.agent.prompts import (
     PLAN_INSTRUCTION,
@@ -34,7 +35,7 @@ from relay.agent.state import AgentState
 from relay.approvals import Approval, ApprovalStore, Decision, InMemoryApprovalStore
 from relay.config import Settings
 from relay.domain import utcnow
-from relay.providers.base import Message, ModelProvider, ModelRequest, ToolCall
+from relay.providers.base import Message, ModelProvider, ModelRequest, ModelResponse, ToolCall
 from relay.tools.errors import is_error
 from relay.tools.registry import CallMeta
 
@@ -80,6 +81,18 @@ class AgentNodes:
     def __init__(self, deps: AgentDeps) -> None:
         self.deps = deps
         self._specs = None
+        provider = deps.provider
+        self._model_call = tracing.maybe_traceable(
+            provider.complete, name=f"{provider.name}:{provider.model}", run_type="llm"
+        )
+
+    async def _complete(self, request: ModelRequest) -> ModelResponse:
+        provider = self.deps.provider
+        with tracing.model_span(provider.name, provider.model, request.purpose) as span:
+            response = await self._model_call(request)
+            for key, value in response.usage.items():
+                span.set_attribute(f"relay.model.{key}", value)
+            return response
 
     # helpers -----------------------------------------------------------------------------
 
@@ -154,7 +167,7 @@ class AgentNodes:
         instruction = REPLAN_INSTRUCTION if replanning else PLAN_INSTRUCTION
         messages = [Message(**m) for m in state["messages"]]
         messages.append(Message(role="user", content=instruction))
-        response = await self.deps.provider.complete(
+        response = await self._complete(
             ModelRequest(purpose="plan", system=system_with_plan([]), messages=messages)
         )
         steps = parse_plan(response.text)
@@ -166,7 +179,7 @@ class AgentNodes:
 
     async def act(self, state: AgentState) -> dict[str, Any]:
         """Ask the model for the next tool call (or a final answer)."""
-        response = await self.deps.provider.complete(
+        response = await self._complete(
             ModelRequest(
                 purpose="act",
                 system=system_with_plan(state.get("plan", [])),

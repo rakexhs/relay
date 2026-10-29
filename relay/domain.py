@@ -58,7 +58,7 @@ class Customer(BaseModel):
 
 
 class TicketCreate(BaseModel):
-    customer_id: str
+    customer_id: str = Field(pattern=r"^C-[A-Za-z0-9]+$")
     subject: str = Field(min_length=1, max_length=300)
     body: str = Field(min_length=1, max_length=20_000)
     priority: Priority = Priority.NORMAL

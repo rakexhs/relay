@@ -16,6 +16,7 @@ from typing import Any
 
 from pydantic import ValidationError
 
+from relay import tracing
 from relay.domain import utcnow
 from relay.memory import Embedder, MemoryStore
 from relay.providers.base import ToolSpec
@@ -203,6 +204,12 @@ class ToolRegistry:
         self, name: str, raw_args: dict[str, Any], meta: CallMeta | None = None
     ) -> dict[str, Any]:
         meta = meta or CallMeta()
+        with tracing.tool_span(name, raw_args, meta.run_id) as span:
+            result = await self._invoke(name, raw_args, meta)
+            tracing.record_tool_result(span, result, meta.approved)
+            return result
+
+    async def _invoke(self, name: str, raw_args: dict[str, Any], meta: CallMeta) -> dict[str, Any]:
         parsed = self.validate(name, raw_args)
         if isinstance(parsed, dict):
             return parsed

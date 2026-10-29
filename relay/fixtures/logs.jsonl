@@ -1,0 +1,9 @@
+{"minutes_ago": 35, "service": "webhooks", "level": "error", "customer_id": "C-1001", "request_id": "req_7f2a", "message": "delivery failed: upstream returned 502 after 10.0s", "status_code": 502}
+{"minutes_ago": 95, "service": "webhooks", "level": "error", "customer_id": "C-1001", "request_id": "req_7f1c", "message": "delivery failed: upstream returned 502 after 10.0s", "status_code": 502}
+{"minutes_ago": 240, "service": "webhooks", "level": "warn", "customer_id": "C-1001", "request_id": "req_7e90", "message": "endpoint marked unhealthy after 20 consecutive failures"}
+{"minutes_ago": 20, "service": "api", "level": "warn", "customer_id": "C-1003", "request_id": "req_91aa", "message": "rate limit exceeded for key ending 4f2c", "status_code": 429}
+{"minutes_ago": 22, "service": "api", "level": "warn", "customer_id": "C-1003", "request_id": "req_91ab", "message": "rate limit exceeded for key ending 4f2c", "status_code": 429}
+{"minutes_ago": 60, "service": "auth", "level": "error", "customer_id": "C-1002", "request_id": "req_33d0", "message": "invalid_api_key: key revoked after rotation grace period", "status_code": 401}
+{"minutes_ago": 180, "service": "sync", "level": "error", "customer_id": "C-1004", "request_id": "req_55e1", "message": "integration token expired; sync job aborted"}
+{"minutes_ago": 15, "service": "exports", "level": "error", "customer_id": "C-1003", "request_id": "req_66b2", "message": "export job timed out after 120s (rows=2.4M)", "status_code": 504}
+{"minutes_ago": 10, "service": "api", "level": "info", "customer_id": "C-1002", "request_id": "req_10aa", "message": "GET /v1/invoices ok", "status_code": 200}

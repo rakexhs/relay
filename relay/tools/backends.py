@@ -262,3 +262,17 @@ def read_jsonl(path: Path) -> list[dict[str, Any]]:
 
 def load_fixture_docs() -> list[dict[str, Any]]:
     return read_jsonl(FIXTURES / "docs.jsonl")
+
+
+def load_demo_customers() -> list[Customer]:
+    return [Customer.model_validate(row) for row in read_jsonl(FIXTURES / "customers.jsonl")]
+
+
+def load_demo_logs(now: datetime) -> list[dict[str, Any]]:
+    """Demo log lines are stored relative to now so the look-back window always finds them."""
+    records = []
+    for row in read_jsonl(FIXTURES / "logs.jsonl"):
+        row = dict(row)
+        row["timestamp"] = (now - timedelta(minutes=row.pop("minutes_ago"))).isoformat()
+        records.append(row)
+    return records
