@@ -46,7 +46,11 @@ def to_anthropic_messages(request: ModelRequest) -> list[dict[str, Any]]:
             else:
                 out.append({"role": "user", "content": [block]})
         else:
-            out.append({"role": "user", "content": [{"type": "text", "text": msg.content}]})
+            text = {"type": "text", "text": msg.content}
+            if out and out[-1]["role"] == "user":
+                out[-1]["content"].append(text)  # the API wants roles to alternate
+            else:
+                out.append({"role": "user", "content": [text]})
     return out
 
 

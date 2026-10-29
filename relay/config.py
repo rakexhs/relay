@@ -31,7 +31,7 @@ class Settings(BaseSettings):
 
     # Agent loop
     max_steps: int = Field(default=12, ge=1, le=100)
-    max_consecutive_errors: int = Field(default=3, ge=1)
+    max_consecutive_errors: int = Field(default=4, ge=1)
     approval_tools: Annotated[list[str], NoDecode] = Field(
         default_factory=lambda: list(WRITE_TOOLS)
     )
