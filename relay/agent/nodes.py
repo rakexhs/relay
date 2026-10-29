@@ -123,7 +123,11 @@ class AgentNodes:
             actor="system",
         )
         memories = [] if is_error(result) else result.get("memories", [])
-        first = Message(role="user", content=render_ticket(ticket, memories))
+        content, reports = render_ticket(ticket, memories, quote=self.deps.settings.quote_retrieved)
+        flagged = [r.as_dict() for r in reports if r.flagged]
+        if flagged:
+            step["safety"] = flagged[0]
+        first = Message(role="user", content=content)
         return {"messages": [first.model_dump()], "trajectory": [step]}
 
     async def plan(self, state: AgentState) -> dict[str, Any]:
@@ -169,12 +173,12 @@ class AgentNodes:
     async def execute(self, state: AgentState) -> dict[str, Any]:
         call = ToolCall(**state["pending"])
         result, step = await self._run_tool(state, call.name, call.args, actor="agent")
-        observation = Message(
-            role="tool",
-            tool_call_id=call.id,
-            name=call.name,
-            content=render_observation(call.name, result),
+        content, report = render_observation(
+            call.name, result, quote=self.deps.settings.quote_retrieved
         )
+        if report.flagged:
+            step["safety"] = report.as_dict()
+        observation = Message(role="tool", tool_call_id=call.id, name=call.name, content=content)
         errors = state.get("consecutive_errors", 0) + 1 if step["error"] else 0
         return {
             "pending": None,

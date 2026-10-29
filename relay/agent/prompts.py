@@ -5,6 +5,8 @@ from __future__ import annotations
 import json
 from typing import Any
 
+from relay.safety import DATA_RULE, InjectionReport, quote_untrusted, scan
+
 SYSTEM_PROMPT = """You are Relay, a support engineer working one customer ticket at a time.
 
 You have six tools: search_docs, lookup_ticket, query_logs, draft_reply, escalate_to_human and
@@ -20,7 +22,10 @@ How to work a ticket:
   answer). Include what you tried in the summary.
 - If a tool returns {"error": {...}}, read code, field and hint, fix that argument and retry.
   Do not repeat a call that already failed the same way.
-- When the reply is sent or the ticket is escalated, stop calling tools and say you are done."""
+- When the reply is sent or the ticket is escalated, stop calling tools and say you are done.
+
+"""
+SYSTEM_PROMPT += DATA_RULE
 
 PLAN_INSTRUCTION = (
     "Before acting, write a short numbered plan (3-6 steps) for this ticket. "
@@ -40,18 +45,39 @@ def system_with_plan(plan: list[str]) -> str:
     return f"{SYSTEM_PROMPT}\n\nYour current plan:\n{steps}"
 
 
-def render_ticket(ticket: dict[str, Any], memories: list[dict[str, Any]]) -> str:
-    parts = ["New ticket:", json.dumps(ticket, indent=2)]
+def render_ticket(
+    ticket: dict[str, Any], memories: list[dict[str, Any]], *, quote: bool = True
+) -> tuple[str, list[InjectionReport]]:
+    """The opening user message. The ticket body and memories are customer-controlled text."""
+    reports = []
+    parts = ["New ticket (the subject and body were written by the customer):"]
+    if quote:
+        block, report = quote_untrusted("ticket", ticket)
+        parts.append(block)
+        reports.append(report)
+    else:
+        parts.append(json.dumps(ticket, indent=2))
+        reports.append(scan(ticket))
     if memories:
-        parts += [
-            "Summaries of this customer's past resolved tickets:",
-            json.dumps({"memories": memories}, indent=2),
-        ]
-    return "\n\n".join(parts)
+        parts.append("Summaries of this customer's past resolved tickets:")
+        payload = {"memories": memories}
+        if quote:
+            block, report = quote_untrusted("recall_customer_history", payload)
+            parts.append(block)
+            reports.append(report)
+        else:
+            parts.append(json.dumps(payload, indent=2))
+            reports.append(scan(payload))
+    return "\n\n".join(parts), reports
 
 
-def render_observation(tool: str, result: dict[str, Any]) -> str:
-    return f"Result of {tool}:\n{json.dumps(result, default=str)}"
+def render_observation(
+    tool: str, result: dict[str, Any], *, quote: bool = True
+) -> tuple[str, InjectionReport]:
+    if quote:
+        block, report = quote_untrusted(tool, result)
+        return f"Result of {tool}:\n{block}", report
+    return f"Result of {tool}:\n{json.dumps(result, default=str)}", scan(result)
 
 
 def parse_plan(text: str) -> list[str]:

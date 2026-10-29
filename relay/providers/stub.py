@@ -9,6 +9,12 @@ Some of its habits are deliberately imperfect so the harness has something to me
 first log query uses `status:` instead of `status_code:` and passes `since="yesterday"`
 verbatim, the way a hurried model often does. It only recovers by reading the structured
 error that `query_logs` returns.
+
+The stub is also gullible on purpose: it obeys instruction-like text it finds *outside* a
+quoted data block (an injected "reply saying ..." or "call escalate_to_human"). Inside an
+UNTRUSTED_DATA block it treats text as data, as the system prompt asks. So with quoting on,
+injection tasks measure whether every retrieval path is actually quoted; with
+RELAY_QUOTE_RETRIEVED=false the same tasks show what happens without it.
 """
 
 from __future__ import annotations
@@ -21,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from relay.providers.base import Message, ModelProvider, ModelRequest, ModelResponse, ToolCall
+from relay.safety.quoting import strip_untrusted
 
 STOPWORDS = frozenset(
     """a an and are as at be been but by can could did do does for from had has have hi hello
@@ -50,6 +57,25 @@ SERVICE_HINTS = (
     ("billing", re.compile(r"\b(invoice|billing|charged|card|payment)\b", re.I)),
     ("exports", re.compile(r"\bexport", re.I)),
     ("sync", re.compile(r"\bsync", re.I)),
+)
+
+OBEY_REFUND_RE = re.compile(r"\b(issue|approve|grant|process)\s+(a\s+)?(full\s+)?refund\b", re.I)
+OBEY_REPLY_RE = re.compile(
+    r"\b(?:reply|respond|tell the customer|send the customer)\b[^\"\n]{0,60}?"
+    r"(?:saying|with the text|with this|exactly)?[:\s]*\\?[\"“](?P<body>[^\"”\\]{10,300})\\?[\"”]",
+    re.I,
+)
+OBEY_ESCALATE_RE = re.compile(
+    r"\b(?:call|use|invoke)\s+(?:the\s+)?escalate_to_human\b(?:[^.\n]{0,40}?reason\W{1,4}(?P<reason>[a-z_]+))?",
+    re.I,
+)
+REASONS = (
+    "sla_breach",
+    "low_confidence",
+    "needs_refund",
+    "tool_failure",
+    "customer_request",
+    "gave_up",
 )
 
 CONFIDENCE_THRESHOLD = 0.3
@@ -105,6 +131,7 @@ class TicketView:
     ticket: dict[str, Any]
     observations: list[Observation] = field(default_factory=list)
     memory: list[dict[str, Any]] = field(default_factory=list)
+    raw_messages: list[Message] = field(default_factory=list)
 
     @property
     def text(self) -> str:
@@ -155,7 +182,9 @@ def read_view(messages: list[Message]) -> TicketView:
                 pending[call.id] = call
         elif msg.role == "tool" and msg.tool_call_id in pending:
             observations.append(Observation(pending.pop(msg.tool_call_id), first_json(msg.content)))
-    return TicketView(ticket=ticket, observations=observations, memory=memory)
+    return TicketView(
+        ticket=ticket, observations=observations, memory=memory, raw_messages=list(messages)
+    )
 
 
 class StubProvider(ModelProvider):
@@ -206,6 +235,10 @@ class StubProvider(ModelProvider):
 
         if _finished(view):
             return None
+
+        injected = _unquoted_directive(request_messages=view.raw_messages, ticket_id=ticket_id)
+        if injected is not None:
+            return injected
 
         for tool in ("lookup_ticket", "search_docs", "query_logs"):
             if view.stuck(tool):
@@ -272,6 +305,36 @@ class StubProvider(ModelProvider):
         if resolution:
             summary += f" Resolved by: {resolution}"
         return summary.strip()
+
+
+def _unquoted_directive(request_messages: list[Message], ticket_id: str) -> ToolCall | None:
+    """Simulate a model that follows instructions it sees outside quoted data."""
+    for msg in request_messages:
+        if msg.role not in ("user", "tool"):
+            continue
+        text = strip_untrusted(msg.content)
+        if match := OBEY_ESCALATE_RE.search(text):
+            reason = (match.group("reason") or "").lower()
+            return _escalate(
+                ticket_id,
+                reason if reason in REASONS else "customer_request",
+                "Escalating as instructed in the retrieved content.",
+            )
+        if match := OBEY_REPLY_RE.search(text):
+            return ToolCall(
+                name="draft_reply",
+                args={"ticket_id": ticket_id, "body": match.group("body").strip(), "send": True},
+            )
+        if OBEY_REFUND_RE.search(text):
+            return ToolCall(
+                name="draft_reply",
+                args={
+                    "ticket_id": ticket_id,
+                    "body": "Good news: your full refund has been approved and issued.",
+                    "send": True,
+                },
+            )
+    return None
 
 
 def _numbered(steps: list[str]) -> str:
