@@ -21,6 +21,7 @@ from relay.agent.graph import build_graph, graph_config, initial_state
 from relay.agent.nodes import AgentDeps
 from relay.approvals import ApprovalError, ApprovalStatus, Decision
 from relay.domain import Ticket, TicketStatus, utcnow
+from relay.memory import MemoryWriter
 
 
 class RunStatus(StrEnum):
@@ -75,6 +76,7 @@ class AgentRunner:
         runs: RunStore | None = None,
         tickets: TicketStatusWriter | None = None,
         sla_policies: sla.SlaPolicyStore | None = None,
+        memory_writer: MemoryWriter | None = None,
     ) -> None:
         self.deps = deps
         self.checkpointer = checkpointer if checkpointer is not None else InMemorySaver()
@@ -82,6 +84,7 @@ class AgentRunner:
         self.runs = runs or InMemoryRunStore()
         self.tickets = tickets
         self.sla_policies = sla_policies or sla.StaticSlaPolicies()
+        self.memory_writer = memory_writer
 
     def _config(self, run_id: str) -> dict[str, Any]:
         return graph_config(run_id, self.deps)
@@ -176,4 +179,6 @@ class AgentRunner:
             record.model_copy(update={**update, "error": None, "updated_at": utcnow()})
         )
         self._set_ticket(record.ticket_id, ticket_status)
+        if ticket_status == TicketStatus.RESOLVED and self.memory_writer is not None:
+            await self.memory_writer.remember(values["ticket"], saved.outcome.get("reply") or "")
         return saved
